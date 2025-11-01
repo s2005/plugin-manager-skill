@@ -148,7 +148,7 @@ Created for the Claude Code community to simplify plugin management.
 
 ## Changelog
 
-### v1.0.0 (2025-11-01)
+### v0.0.1 (2025-11-01)
 - Initial release
 - Cross-platform Python script
 - Platform-specific documentation (Windows/Unix)
