@@ -1,0 +1,401 @@
+name: Release Skill
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create GitHub release'
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.ref }}
+      
+      - name: Extract version from VERSION file
+        id: get_version
+        run: |
+          if [ -f "VERSION" ]; then
+            VERSION=$(cat VERSION | tr -d '[:space:]')
+            echo "Extracted version: $VERSION"
+            echo "version=$VERSION" >> $GITHUB_OUTPUT
+            echo "version_tag=v$VERSION" >> $GITHUB_OUTPUT
+          else
+            echo "ERROR: VERSION file not found"
+            exit 1
+          fi
+      
+      - name: Verify skill structure
+        run: |
+          echo "Verifying plugin-manager skill structure..."
+
+          # Check for required SKILL.md file
+          if [ ! -f "SKILL.md" ]; then
+            echo "ERROR: SKILL.md not found"
+            exit 1
+          fi
+
+          # Verify YAML frontmatter exists
+          if ! head -n 5 SKILL.md | grep -q "^---$"; then
+            echo "ERROR: SKILL.md missing YAML frontmatter"
+            exit 1
+          fi
+
+          # Verify required fields in frontmatter
+          if ! grep -q "^name:" SKILL.md; then
+            echo "ERROR: SKILL.md missing 'name' field in frontmatter"
+            exit 1
+          fi
+
+          if ! grep -q "^description:" SKILL.md; then
+            echo "ERROR: SKILL.md missing 'description' field in frontmatter"
+            exit 1
+          fi
+
+          # Check for required directories
+          if [ ! -d "docs" ]; then
+            echo "ERROR: docs/ directory not found"
+            exit 1
+          fi
+
+          if [ ! -d "scripts" ]; then
+            echo "ERROR: scripts/ directory not found"
+            exit 1
+          fi
+
+          # Check for Python script
+          if [ ! -f "scripts/list_plugins.py" ]; then
+            echo "ERROR: scripts/list_plugins.py not found"
+            exit 1
+          fi
+
+          echo "✓ Skill structure is valid"
+
+          # Display skill info
+          echo ""
+          echo "Skill contents:"
+          find . -type f -not -path "./.git/*" -not -path "./.github/*" | sort
+      
+      - name: Build skill distribution
+        run: |
+          echo "Building skill package for Claude Code..."
+          echo "Version: ${{ steps.get_version.outputs.version }}"
+          echo "Version tag: ${{ steps.get_version.outputs.version_tag }}"
+
+          # Create temporary build directory
+          mkdir -p build/plugin-manager
+
+          # Copy skill files to build location
+          cp SKILL.md build/plugin-manager/
+          cp -r docs build/plugin-manager/
+          cp -r scripts build/plugin-manager/
+
+          # Create zip archive from within the build directory
+          # This ensures the zip contains: plugin-manager/SKILL.md, plugin-manager/docs/*, plugin-manager/scripts/*
+          cd build
+          zip -r ../plugin-manager-skill.zip plugin-manager/
+          cd ..
+
+          # Display archive contents
+          echo ""
+          echo "Archive contents:"
+          unzip -l plugin-manager-skill.zip
+
+          # Display archive size
+          echo ""
+          echo "Archive size:"
+          ls -lh plugin-manager-skill.zip
+      
+      - name: Validate skill archive
+        run: |
+          echo "Validating skill archive..."
+
+          # Create test extraction directory
+          mkdir -p test-extract
+          cd test-extract
+
+          # Extract and verify structure
+          unzip -q ../plugin-manager-skill.zip
+
+          # Verify the expected structure
+          if [ ! -f "plugin-manager/SKILL.md" ]; then
+            echo "ERROR: Archive does not contain plugin-manager/SKILL.md"
+            exit 1
+          fi
+
+          if [ ! -d "plugin-manager/docs" ]; then
+            echo "ERROR: Archive does not contain plugin-manager/docs/"
+            exit 1
+          fi
+
+          if [ ! -d "plugin-manager/scripts" ]; then
+            echo "ERROR: Archive does not contain plugin-manager/scripts/"
+            exit 1
+          fi
+
+          if [ ! -f "plugin-manager/scripts/list_plugins.py" ]; then
+            echo "ERROR: Archive does not contain plugin-manager/scripts/list_plugins.py"
+            exit 1
+          fi
+
+          echo "✓ Archive structure is valid for Claude Code installation"
+          cd ..
+      
+      - name: Upload skill artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: plugin-manager-skill-${{ steps.get_version.outputs.version }}
+          path: plugin-manager-skill.zip
+          retention-days: 90
+      
+      - name: Attach skill to release
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.create_release)
+        uses: softprops/action-gh-release@v1
+        with:
+          files: plugin-manager-skill.zip
+          tag_name: ${{ github.event.release.tag_name || steps.get_version.outputs.version_tag }}
+          name: ${{ github.event.release.name || steps.get_version.outputs.version_tag }}
+          body: |
+            # Plugin Manager Skill v${{ steps.get_version.outputs.version }}
+            
+            ## Quick Start
+
+            1. Download `plugin-manager-skill.zip` from the Assets section below
+            2. Extract to your Claude Code skills directory:
+               - Windows: `$USERPROFILE/.claude/skills/`
+               - Unix/Mac: `~/.claude/skills/`
+            3. Start asking Claude Code about your plugins!
+
+            ---
+
+            ## What This Skill Does
+
+            This skill enables Claude Code to list, check, and manage installed plugins. Since the `claude plugin list` command doesn't exist, this skill provides direct access to plugin information from settings.json using Python scripts and jq commands.
+            
+            ## Detailed Installation Instructions
+
+            ### Step 1: Download the Skill
+
+            Download `plugin-manager-skill.zip` from the **Assets** section below.
+
+            ### Step 2: Extract to Skills Directory
+
+            **Windows (Git Bash/PowerShell):**
+            ```bash
+            unzip plugin-manager-skill.zip -d "$USERPROFILE/.claude/skills/"
+            ```
+
+            **Unix/Mac:**
+            ```bash
+            unzip plugin-manager-skill.zip -d ~/.claude/skills/
+            ```
+
+            ### Step 3: Verify Installation
+
+            Check that the skill directory exists:
+            ```bash
+            # Windows
+            ls "$USERPROFILE/.claude/skills/plugin-manager"
+
+            # Unix/Mac
+            ls ~/.claude/skills/plugin-manager
+            ```
+
+            ### Step 4: Start Using the Skill
+
+            The skill activates automatically when you ask Claude Code about plugins. Try:
+
+            - "List all installed plugins"
+            - "What plugins do I have?"
+            - "Is markdown-linter-fixer installed?"
+            - "Show me plugin status"
+            - "How many plugins are enabled?"
+            
+            ## What's Included
+
+            The skill package contains:
+
+            - `SKILL.md` - Main skill configuration with platform detection
+            - `docs/windows-guide.md` - Windows-specific commands (Git Bash/MINGW64)
+            - `docs/unix-guide.md` - Unix/Mac-specific commands
+            - `scripts/list_plugins.py` - Cross-platform Python script
+
+            ## How It Works
+
+            The skill provides two methods for querying plugins:
+
+            1. **Python Script** (Recommended): Cross-platform, handles paths automatically
+            2. **jq Commands**: Advanced JSON queries with platform-specific syntax
+
+            No dependencies required - Python and jq are standard on most systems!
+            
+            ## Skill Features
+
+            - **Cross-Platform Support**: Works on Windows, Unix, Linux, Mac
+            - **Multiple Output Formats**: Table, JSON, simple list
+            - **Plugin Status Checking**: Check if specific plugins are installed
+            - **Statistics**: Count total, enabled, and disabled plugins
+            - **Platform Detection**: Automatically uses correct path syntax
+            - **No External Dependencies**: Uses standard Python and jq
+            
+            ## Important Notes
+
+            - This is a **Claude Code** skill (not Claude.ai)
+            - Works with Claude Code CLI and desktop application
+            - Read-only access to settings.json - never modifies plugin configuration
+            - Platform-specific guides prevent common path syntax errors
+            - Supports project-specific skills directory (`.claude/skills/`)
+            
+            ## Security
+
+            This skill:
+            - Only reads settings.json (read-only access)
+            - Never modifies plugin configuration
+            - Uses standard Python and jq (no external dependencies)
+            - No network calls required
+            - Open source - review the code before installation
+            
+            ## Support
+
+            For issues or questions:
+            - [GitHub Issues](https://github.com/s2005/plugin-manager-skill/issues)
+            - [GitHub Discussions](https://github.com/s2005/plugin-manager-skill/discussions)
+
+            ## Additional Information
+
+            - **Repository**: https://github.com/s2005/plugin-manager-skill
+            - **License**: MIT
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Generate installation instructions
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.create_release)
+        run: |
+          cat << 'EOF' > SKILL_INSTALLATION.md
+          # Installing the Plugin Manager Skill in Claude Code
+
+          ## What This Skill Does
+
+          This skill enables Claude Code to list, check, and manage installed plugins. Since the `claude plugin list` command doesn't exist, this skill provides direct access to plugin information from settings.json.
+          
+          ## Installation Steps
+          
+          ### Step 1: Download the Skill
+
+          Download `plugin-manager-skill.zip` from this release.
+
+          ### Step 2: Extract to Skills Directory
+
+          **Windows (Git Bash/PowerShell):**
+          ```bash
+          unzip plugin-manager-skill.zip -d "$USERPROFILE/.claude/skills/"
+          ```
+
+          **Unix/Mac:**
+          ```bash
+          unzip plugin-manager-skill.zip -d ~/.claude/skills/
+          ```
+
+          ### Step 3: Verify Installation
+
+          Check that the skill directory exists:
+          ```bash
+          # Windows
+          ls "$USERPROFILE/.claude/skills/plugin-manager"
+
+          # Unix/Mac
+          ls ~/.claude/skills/plugin-manager
+          ```
+
+          ### Step 4: Start Using the Skill
+
+          The skill activates automatically when you ask Claude Code about plugins. Try:
+
+          - "List all installed plugins"
+          - "What plugins do I have?"
+          - "Is markdown-linter-fixer installed?"
+          - "Show me plugin status"
+          
+          ## What's Included
+          
+          The skill package contains:
+
+          - `SKILL.md` - Main skill configuration with platform detection
+          - `docs/windows-guide.md` - Windows-specific commands
+          - `docs/unix-guide.md` - Unix/Mac-specific commands
+          - `scripts/list_plugins.py` - Cross-platform Python script
+
+          ## How It Works
+
+          The skill provides two methods:
+
+          1. **Python Script** (Recommended): Cross-platform, handles paths automatically
+          2. **jq Commands**: Advanced JSON queries with platform-specific syntax
+
+          No dependencies required!
+
+          ## Skill Features
+
+          - **Cross-Platform Support**: Windows, Unix, Linux, Mac
+          - **Multiple Output Formats**: Table, JSON, simple list
+          - **Plugin Status Checking**: Check if specific plugins are installed
+          - **Statistics**: Count enabled/disabled plugins
+          - **Platform Detection**: Automatic path syntax correction
+
+          ## Important Notes
+
+          - This is a **Claude Code** skill (not Claude.ai)
+          - Read-only access to settings.json
+          - Never modifies plugin configuration
+          - Works with global and project-specific skills
+
+          ## Security
+
+          This skill:
+          - Only reads settings.json (read-only)
+          - Never modifies configuration
+          - Uses standard Python and jq
+          - No network calls required
+          - Open source code
+
+          ## Support
+
+          For issues or questions:
+          - [GitHub Issues](https://github.com/s2005/plugin-manager-skill/issues)
+          - [GitHub Discussions](https://github.com/s2005/plugin-manager-skill/discussions)
+
+          ## Version Information
+
+          - Version: ${{ steps.get_version.outputs.version }}
+          - Release Tag: ${{ github.event.release.tag_name || steps.get_version.outputs.version_tag }}
+          - Repository: https://github.com/s2005/plugin-manager-skill
+          - License: MIT
+          
+          EOF
+          
+          echo "Installation instructions generated"
+      
+      - name: Upload installation instructions
+        if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.create_release)
+        uses: actions/upload-artifact@v4
+        with:
+          name: installation-instructions
+          path: SKILL_INSTALLATION.md
+          retention-days: 90
